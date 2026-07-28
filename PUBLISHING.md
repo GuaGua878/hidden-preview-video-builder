@@ -2,7 +2,7 @@
 
 发布人：教主
 
-当前版本：v0.1.0
+当前版本：v0.1.1
 
 ## 1. 最终检查
 
@@ -31,21 +31,21 @@ release manifest 全部通过。打包脚本只接受同时包含 `ffmpeg.exe` �
 
 ```powershell
 git add .
-git commit -m "Release v0.1.0"
-git tag -a v0.1.0 -m "Hidden Preview Builder v0.1.0"
+git commit -m "Release v0.1.1"
+git tag -a v0.1.1 -m "Hidden Preview Builder v0.1.1"
 git push -u origin main
-git push origin v0.1.0
+git push origin v0.1.1
 ```
 
 执行前请先确认 Git 的邮箱、远程仓库地址和 GitHub 账号均正确。
 
 ## 3. 创建 GitHub Release
 
-1. 选择 tag `v0.1.0`。
-2. 标题填写 `Hidden Preview Builder v0.1.0`。
-3. 正文复制 `RELEASE_NOTES-v0.1.0.md`。
+1. 选择 tag `v0.1.1`。
+2. 标题填写 `Hidden Preview Builder v0.1.1`。
+3. 正文复制 `RELEASE_NOTES-v0.1.1.md`。
 4. 上传唯一的默认程序包
-   `release\HiddenPreviewBuilder-v0.1.0-windows-x64-full-portable.zip`。
+   `release\HiddenPreviewBuilder-v0.1.1-windows-x64-full-portable.zip`。
 5. 同时上传对应 `.sha256.txt` 和 `.manifest.json`。
 6. 不生成或上传 slim 版本。
 7. 发布前确认 ZIP 根目录包含 EXE、`ffmpeg.exe` 和 `ffprobe.exe`，且

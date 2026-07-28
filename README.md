@@ -1,6 +1,6 @@
 # Hidden Preview Video Builder
 
-**发布人：教主　当前版本：v0.1.0**
+**发布人：教主　当前版本：v0.1.1**
 
 一个面向 Windows 的实验性 MP4 工具：正常播放时只显示 Video A，同时在
 物理视频轨前放置一段等长的图片或 Video B，用于研究进度条缩略图生成器是否
@@ -39,7 +39,7 @@
 
 ## 运行 EXE
 
-1. 下载 `HiddenPreviewBuilder-v0.1.0-windows-x64-full-portable.zip`。
+1. 下载 `HiddenPreviewBuilder-v0.1.1-windows-x64-full-portable.zip`。
 2. 完整解压 ZIP，不要单独移动或删除其中的 `ffmpeg.exe`、`ffprobe.exe`。
 3. 打开 `HiddenPreviewBuilder.exe`。
 4. 选择 Video A、预览图片或 Video B、输出文件夹、画面适配方式和时间线
@@ -122,7 +122,7 @@ ZIP。FFmpeg 与 ffprobe 作为独立文件放在 EXE 旁边，并不嵌入主�
 ```
 
 产物位于 `release\`。唯一的默认程序包是
-`HiddenPreviewBuilder-v0.1.0-windows-x64-full-portable.zip`，不再生成
+`HiddenPreviewBuilder-v0.1.1-windows-x64-full-portable.zip`，不再生成
 slim 版本。ZIP 内含主程序、`ffmpeg.exe`、`ffprobe.exe`、简明说明、MIT
 License、GPL v3 全文、FFmpeg 原始构建说明与源码入口。普通用户解压后先看
 根目录的 `使用说明.txt`；旁边还会生成 ZIP 的 SHA-256 文件和发布 manifest。

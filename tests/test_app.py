@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from hidden_preview_builder import __version__
 from hidden_preview_builder.app import run_self_test
 
 
@@ -27,7 +28,7 @@ class AppTests(unittest.TestCase):
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["status"], "PASS")
             self.assertEqual(report["publisher"], "教主")
-            self.assertEqual(report["version"], "0.1.0")
+            self.assertEqual(report["version"], __version__)
             self.assertEqual(
                 Path(report["ffmpeg"]).name.lower(),
                 "ffmpeg.exe",
