@@ -39,6 +39,7 @@ IMAGE_EXTENSIONS = {
     ".tiff",
     ".webp",
 }
+TIMELINE_POLICIES = {"strict", "preserve-duration"}
 
 ProgressCallback = Callable[[str, str], None]
 
@@ -771,6 +772,117 @@ def choose_timescale(fps: Fraction) -> tuple[int, int]:
     return timescale, frame_ticks
 
 
+def round_positive_fraction(value: Fraction) -> int:
+    if value < 0:
+        raise ValueError(f"Expected a non-negative fraction, got {value}")
+    return (value.numerator * 2 + value.denominator) // (
+        value.denominator * 2
+    )
+
+
+def nominal_video_fps(video: dict[str, Any]) -> Fraction:
+    candidates = [
+        str(video.get("r_frame_rate", "")),
+        str(video.get("avg_frame_rate", "")),
+    ]
+    last_error: Exception | None = None
+    for value in candidates:
+        try:
+            fps = parse_fraction(value)
+        except (ValueError, ZeroDivisionError) as exc:
+            last_error = exc
+            continue
+        if fps > 1000:
+            last_error = ValueError(f"Implausible frame rate: {fps}")
+            continue
+        # Container averages can have enormous numerators even when the
+        # intended cadence is a standard integer/NTSC rate. Keep enough
+        # denominator range for 24000/1001, 30000/1001, 60000/1001, etc.
+        return fps.limit_denominator(1001)
+    raise RuntimeError("Could not determine a nominal Video A frame rate") from (
+        last_error
+    )
+
+
+def frame_timing_summary(
+    *,
+    video: dict[str, Any],
+    frame_probe: dict[str, Any],
+    fps: Fraction,
+    expected_frames: int,
+) -> dict[str, Any]:
+    frames = frame_probe.get("frames", [])
+    if len(frames) != expected_frames:
+        raise RuntimeError(
+            "Video frame timing probe count does not match the decoded frame "
+            f"count: {len(frames)} != {expected_frames}"
+        )
+    time_base = parse_fraction(str(video.get("time_base", "")))
+    nominal_ticks = Fraction(1, 1) / (fps * time_base)
+    pts_values: list[int] = []
+    durations: list[int] = []
+    for index, frame in enumerate(frames):
+        pts_value = frame.get(
+            "best_effort_timestamp",
+            frame.get("pts"),
+        )
+        if pts_value in (None, "N/A"):
+            raise RuntimeError(
+                f"Video frame {index} has no usable presentation timestamp"
+            )
+        pts_values.append(int(pts_value))
+        duration_value = frame.get("duration", frame.get("pkt_duration"))
+        if duration_value not in (None, "N/A"):
+            durations.append(int(duration_value))
+
+    discontinuities: list[dict[str, Any]] = []
+    missing_frame_slots = 0
+    for index in range(1, len(pts_values)):
+        delta = pts_values[index] - pts_values[index - 1]
+        if delta <= 0:
+            discontinuities.append(
+                {
+                    "frame_index": index,
+                    "delta_ticks": delta,
+                    "nominal_ticks": fraction_text(nominal_ticks),
+                    "kind": "non_monotonic",
+                }
+            )
+            continue
+        if abs(Fraction(delta, 1) - nominal_ticks) <= 1:
+            continue
+        slots = max(
+            1,
+            round_positive_fraction(Fraction(delta, 1) / nominal_ticks),
+        )
+        if delta > nominal_ticks:
+            missing_frame_slots += max(0, slots - 1)
+        discontinuities.append(
+            {
+                "frame_index": index,
+                "delta_ticks": delta,
+                "nominal_ticks": fraction_text(nominal_ticks),
+                "nominal_slots": slots,
+                "kind": "gap" if delta > nominal_ticks else "short_step",
+            }
+        )
+
+    duration_outliers = sum(
+        1
+        for duration in durations
+        if abs(Fraction(duration, 1) - nominal_ticks) > 1
+    )
+    return {
+        "first_pts": pts_values[0] if pts_values else 0,
+        "last_pts": pts_values[-1] if pts_values else 0,
+        "nominal_frame_ticks": fraction_text(nominal_ticks),
+        "pts_discontinuities": len(discontinuities),
+        "missing_frame_slots": missing_frame_slots,
+        "duration_outliers": duration_outliers,
+        "discontinuities": discontinuities,
+    }
+
+
 def source_geometry(probe: dict[str, Any]) -> tuple[int, int]:
     video_streams = [
         stream
@@ -878,14 +990,19 @@ def full_decode(
 
 def main_video_spec(
     main_probe: dict[str, Any],
+    frame_probe: dict[str, Any],
+    *,
+    timeline_policy: str = "strict",
 ) -> dict[str, Any]:
+    if timeline_policy not in TIMELINE_POLICIES:
+        raise ValueError(f"Unsupported timeline policy: {timeline_policy}")
     video = find_stream(main_probe, "video")
     audio = find_stream(main_probe, "audio")
-    fps = parse_fraction(str(video.get("avg_frame_rate", "")))
-    frame_count = safe_int(
+    fps = nominal_video_fps(video)
+    source_frame_count = safe_int(
         video.get("nb_read_frames"), safe_int(video.get("nb_frames"), 0)
     )
-    if frame_count <= 0:
+    if source_frame_count <= 0:
         raise RuntimeError("Could not count visible frames in Video A")
     width = safe_int(video.get("width"))
     height = safe_int(video.get("height"))
@@ -893,21 +1010,69 @@ def main_video_spec(
         raise RuntimeError(
             f"Video A dimensions must be even for yuv420p: {width}x{height}"
         )
-    duration = Fraction(frame_count, 1) / fps
-    if video.get("duration_ts") not in (None, "N/A") and video.get(
+    timing = frame_timing_summary(
+        video=video,
+        frame_probe=frame_probe,
+        fps=fps,
+        expected_frames=source_frame_count,
+    )
+    source_cfr_duration = Fraction(source_frame_count, 1) / fps
+    format_duration_value = main_probe.get("format", {}).get("duration")
+    if format_duration_value not in (None, "N/A"):
+        public_duration = fraction_from_decimal(format_duration_value)
+    elif video.get("duration_ts") not in (None, "N/A") and video.get(
         "time_base"
     ) not in (None, "0/0"):
-        stream_duration = (
+        public_duration = (
             Fraction(int(video["duration_ts"]), 1)
             * Fraction(str(video["time_base"]))
         )
-        if abs(stream_duration - duration) > Fraction(1, 1) / fps:
-            raise RuntimeError(
-                "Video A appears variable-frame-rate or has an incompatible "
-                "timeline. Ask the user before choosing a CFR interpretation."
-            )
+    else:
+        public_duration = source_cfr_duration
+
+    duration_mismatch = (
+        abs(public_duration - source_cfr_duration) > Fraction(1, 1) / fps
+    )
+    irregular = (
+        timing["pts_discontinuities"] > 0
+        or timing["duration_outliers"] > 0
+        or duration_mismatch
+    )
+    if timeline_policy == "strict" and irregular:
+        raise RuntimeError(
+            "Video A appears variable-frame-rate or has an incompatible "
+            "timeline. Use the preserve-duration policy only after choosing "
+            "to conform it to CFR."
+        )
+
+    if timeline_policy == "preserve-duration":
+        frame_count = max(
+            1,
+            round_positive_fraction(public_duration * fps),
+        )
+        duration = Fraction(frame_count, 1) / fps
+    else:
+        frame_count = source_frame_count
+        duration = source_cfr_duration
+
+    timing.update(
+        {
+            "policy": timeline_policy,
+            "normalized": (
+                timeline_policy == "preserve-duration"
+                and (irregular or frame_count != source_frame_count)
+            ),
+            "source_frame_count": source_frame_count,
+            "target_frame_count": frame_count,
+            "source_public_duration_seconds": float(public_duration),
+            "source_cfr_duration_seconds": float(source_cfr_duration),
+            "target_duration_seconds": float(duration),
+            "duration_mismatch_over_one_frame": duration_mismatch,
+        }
+    )
     return {
         "fps": fps,
+        "source_frame_count": source_frame_count,
         "frame_count": frame_count,
         "duration": duration,
         "width": width,
@@ -916,6 +1081,7 @@ def main_video_spec(
         "audio_channels": safe_int(audio.get("channels")),
         "source_video_stream": video,
         "source_audio_stream": audio,
+        "timeline": timing,
     }
 
 
@@ -1062,6 +1228,28 @@ def probe_input(
         args.append("-count_frames")
     args.extend(["-show_streams", "-show_format"])
     return ffprobe_json(runner, ffprobe, path, args)
+
+
+def probe_video_frames(
+    runner: Runner,
+    ffprobe: str,
+    path: Path,
+) -> dict[str, Any]:
+    return ffprobe_json(
+        runner,
+        ffprobe,
+        path,
+        [
+            "-select_streams",
+            "v:0",
+            "-show_frames",
+            "-show_entries",
+            (
+                "frame=pts,best_effort_timestamp,duration,"
+                "pkt_duration"
+            ),
+        ],
+    )
 
 
 def count_output(
@@ -1375,6 +1563,16 @@ def build_parser() -> argparse.ArgumentParser:
             "ratios. contain adds bars; cover crops; stretch distorts."
         ),
     )
+    parser.add_argument(
+        "--timeline-policy",
+        choices=sorted(TIMELINE_POLICIES),
+        default="strict",
+        help=(
+            "strict rejects irregular Video A timestamps; "
+            "preserve-duration conforms them to the nominal frame rate "
+            "while preserving the source container duration."
+        ),
+    )
     parser.add_argument("--preset", default="medium")
     parser.add_argument("--crf", type=int, default=18)
     parser.add_argument("--audio-bitrate", default="256k")
@@ -1391,6 +1589,7 @@ def build_hidden_preview(
     artifacts_dir: str | Path | None = None,
     preview_kind: str = "auto",
     fit: str | None = None,
+    timeline_policy: str = "strict",
     preset: str = "medium",
     crf: int = 18,
     audio_bitrate: str = "256k",
@@ -1409,6 +1608,7 @@ def build_hidden_preview(
         ),
         preview_kind=preview_kind,
         fit=fit,
+        timeline_policy=timeline_policy,
         preset=preset,
         crf=crf,
         audio_bitrate=audio_bitrate,
@@ -1458,6 +1658,11 @@ def build_hidden_preview(
     main_probe = probe_input(
         runner, ffprobe, main_video, count_frames=True
     )
+    main_frame_probe = probe_video_frames(
+        runner,
+        ffprobe,
+        main_video,
+    )
     preview_probe = probe_input(
         runner, ffprobe, preview_source, count_frames=False
     )
@@ -1465,11 +1670,19 @@ def build_hidden_preview(
         json.dumps(main_probe, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    (artifacts / "input_video_a_frames.json").write_text(
+        json.dumps(main_frame_probe, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     (artifacts / "input_preview_probe.json").write_text(
         json.dumps(preview_probe, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    spec = main_video_spec(main_probe)
+    spec = main_video_spec(
+        main_probe,
+        main_frame_probe,
+        timeline_policy=args.timeline_policy,
+    )
     preview_kind = classify_preview(
         preview_source, args.preview_kind, preview_probe
     )
@@ -1505,6 +1718,7 @@ def build_hidden_preview(
                 "fit": fit,
                 "video_timescale": video_timescale,
                 "frame_ticks": frame_ticks,
+                "timeline": spec["timeline"],
             },
             ensure_ascii=False,
         )
@@ -1582,6 +1796,8 @@ def build_hidden_preview(
             "height": spec["height"],
             "public_frames": spec["frame_count"],
             "physical_frames": spec["frame_count"] * 2,
+            "source_frames": spec["source_frame_count"],
+            "timeline": spec["timeline"],
             "audio_sample_rate": spec["audio_sample_rate"],
             "audio_channels": spec["audio_channels"],
         },
@@ -1628,6 +1844,7 @@ def main() -> int:
         artifacts_dir=args.artifacts_dir,
         preview_kind=args.preview_kind,
         fit=args.fit,
+        timeline_policy=args.timeline_policy,
         preset=args.preset,
         crf=args.crf,
         audio_bitrate=args.audio_bitrate,

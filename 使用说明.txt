@@ -1,3 +1,6 @@
 双击HiddenPreviewBuilder.exe打开程序。
 
 请保持HiddenPreviewBuilder.exe、ffmpeg.exe和ffprobe.exe在同一文件夹内。
+
+时间线处理建议使用默认的“保留公开时长，缺帧自动补帧”。它会按Video A的
+名义帧率生成稳定CFR，并自动处理时间戳缺口；严格模式遇到异常会停止。
