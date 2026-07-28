@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from . import __publisher__, __version__
+from .engine import TIMELINE_POLICIES
 from .service import BuildFailure, BuildOptions, run_build
 
 
@@ -36,6 +37,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--preview-kind",
         choices=["auto", "image", "video"],
         default="auto",
+    )
+    parser.add_argument(
+        "--timeline-policy",
+        choices=sorted(TIMELINE_POLICIES),
+        default="strict",
+        help=(
+            "strict rejects irregular timestamps; preserve-duration "
+            "conforms them to CFR and preserves the source duration."
+        ),
     )
     parser.add_argument("--preset", default="medium")
     parser.add_argument("--crf", type=int, default=18)
@@ -72,6 +82,7 @@ def main() -> int:
                 preview_source=args.preview_source,
                 output=args.output,
                 fit=args.fit,
+                timeline_policy=args.timeline_policy,
                 preview_kind=args.preview_kind,
                 preset=args.preset,
                 crf=args.crf,

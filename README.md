@@ -26,7 +26,9 @@
 ## 功能
 
 - 图片或 Video B 均可作为隐藏预览；短视频自动循环，长视频自动裁切。
-- 预览素材按 Video A 的准确 CFR、帧数、分辨率和时长适配。
+- 以 Video A 的名义帧率生成稳定 CFR；可严格拒绝异常时间戳，也可保持
+  容器公开时长并自动补齐缺帧。
+- 预览素材按修正后的 CFR、帧数、分辨率和时长适配。
 - 三种画面适配：完整显示并补黑边、铺满并裁切、直接拉伸。
 - 公开音轨只使用 Video A 的音频，并转为 AAC-LC。
 - 修补并审计 `ctts`、`elst`、`mvhd` 和视频 `tkhd`。
@@ -40,7 +42,8 @@
 1. 下载 `HiddenPreviewBuilder-v0.1.0-windows-x64-full-portable.zip`。
 2. 完整解压 ZIP，不要单独移动或删除其中的 `ffmpeg.exe`、`ffprobe.exe`。
 3. 打开 `HiddenPreviewBuilder.exe`。
-4. 选择 Video A、预览图片或 Video B、输出文件夹和画面适配方式。
+4. 选择 Video A、预览图片或 Video B、输出文件夹、画面适配方式和时间线
+   处理方式。GUI 默认使用“保留公开时长，缺帧自动补帧”。
 5. 点击“生成 fin.mp4”。
 
 full-portable 包已附带同一构建的 FFmpeg 与 ffprobe，不需要另行安装。冻结版
@@ -51,7 +54,8 @@ full-portable 包已附带同一构建的 FFmpeg 与 ffprobe，不需要另行�
 Video A 必须：
 
 - 恰好包含一个视频轨和一个音频轨；
-- 是恒定帧率（CFR），且帧数 / fps 与可见时长的误差不超过一帧；
+- 能提供有效的名义帧率与逐帧时间戳；推荐模式会把缺帧或不连续时间戳转换为
+  稳定 CFR 并保持容器公开时长，严格模式则直接停止；
 - 宽和高均为偶数，以便输出 `yuv420p`；
 - 使用程序和 FFmpeg 能读取的容器与编码。
 
@@ -77,7 +81,8 @@ hidden-preview-builder `
   --main-video "D:\media\video-a.mp4" `
   --preview-source "D:\media\preview.png" `
   --output "D:\output\fin.mp4" `
-  --fit contain
+  --fit contain `
+  --timeline-policy preserve-duration
 ```
 
 `--keep-artifacts` 会把验证帧、manifest、容器审计和日志保留在系统临时目录。
@@ -129,7 +134,8 @@ License、GPL v3 全文、FFmpeg 原始构建说明与源码入口。普通用�
 
 成功状态 `PASS` 会检查：
 
-- 公开帧数等于 Video A，物理帧数为其两倍；
+- 正常 CFR 输入的公开帧数等于 Video A；修正异常时间线时，公开帧数按
+  `容器公开时长 × 名义 fps` 取整，物理帧数始终为公开帧数两倍；
 - fps、分辨率、公开时长和音频形状与 Video A 一致；
 - 视频为 H.264 High / `yuv420p`，音频为 AAC-LC；
 - 视频轨排在音频轨之前，track ID 为 1 / 2；

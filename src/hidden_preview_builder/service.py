@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .engine import ProgressCallback, build_hidden_preview
+from .engine import (
+    TIMELINE_POLICIES,
+    ProgressCallback,
+    build_hidden_preview,
+)
 
 
 @dataclass(frozen=True)
@@ -17,6 +21,7 @@ class BuildOptions:
     preview_source: Path
     output: Path
     fit: str
+    timeline_policy: str = "strict"
     preview_kind: str = "auto"
     preset: str = "medium"
     crf: int = 18
@@ -37,6 +42,11 @@ class BuildOutcome:
     height: int
     public_frames: int
     physical_frames: int
+    source_frames: int
+    timeline_policy: str
+    timeline_normalized: bool
+    pts_discontinuities: int
+    missing_frame_slots: int
     ctts_version: int
     ctts_offset_min: int
     ctts_offset_max: int
@@ -59,6 +69,13 @@ class BuildOutcome:
             "resolution": f"{self.width}x{self.height}",
             "public_frames": self.public_frames,
             "physical_frames": self.physical_frames,
+            "source_frames": self.source_frames,
+            "timeline": {
+                "policy": self.timeline_policy,
+                "normalized": self.timeline_normalized,
+                "pts_discontinuities": self.pts_discontinuities,
+                "missing_frame_slots": self.missing_frame_slots,
+            },
             "ctts": {
                 "version": self.ctts_version,
                 "offset_min": self.ctts_offset_min,
@@ -119,6 +136,7 @@ def _outcome_from_result(
     target = result["target_from_video_a"]
     output = result["output"]
     patch = result["container_patch"]
+    timeline = target["timeline"]
     container = result["verification"]["container"]
     ctts = container["tracks"]["vide"]["ctts"]
     if ctts is None:
@@ -133,6 +151,11 @@ def _outcome_from_result(
         height=int(target["height"]),
         public_frames=int(target["public_frames"]),
         physical_frames=int(target["physical_frames"]),
+        source_frames=int(target["source_frames"]),
+        timeline_policy=str(timeline["policy"]),
+        timeline_normalized=bool(timeline["normalized"]),
+        pts_discontinuities=int(timeline["pts_discontinuities"]),
+        missing_frame_slots=int(timeline["missing_frame_slots"]),
         ctts_version=int(ctts["version"]),
         ctts_offset_min=int(ctts["offset_min"]),
         ctts_offset_max=int(ctts["offset_max"]),
@@ -171,6 +194,10 @@ def run_build(
         )
     if options.fit not in {"contain", "cover", "stretch"}:
         raise ValueError(f"Unsupported fit mode: {options.fit}")
+    if options.timeline_policy not in TIMELINE_POLICIES:
+        raise ValueError(
+            f"Unsupported timeline policy: {options.timeline_policy}"
+        )
 
     temp_root = (
         Path(tempfile.gettempdir()) / "hidden-preview-video-builder"
@@ -190,6 +217,7 @@ def run_build(
             artifacts_dir=artifacts_dir,
             preview_kind=options.preview_kind,
             fit=options.fit,
+            timeline_policy=options.timeline_policy,
             preset=options.preset,
             crf=options.crf,
             audio_bitrate=options.audio_bitrate,

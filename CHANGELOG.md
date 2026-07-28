@@ -14,3 +14,5 @@
 - full-portable 包随附 FFmpeg/ffprobe、GPL v3 全文、原始构建信息与源码
   入口；冻结版优先使用 EXE 同目录工具。
 - full-portable 包根目录提供面向普通用户的中文 `使用说明.txt`。
+- 修复异常 `avg_frame_rate` 分数导致 MP4 timescale 溢出的错误。
+- 新增逐帧 PTS 检查，以及“保持公开时长并自动补帧”的时间线修正策略。

@@ -20,6 +20,11 @@ FIT_LABELS = {
     "直接拉伸到画面尺寸": "stretch",
 }
 
+TIMELINE_LABELS = {
+    "保留公开时长，缺帧自动补帧（推荐）": "preserve-duration",
+    "严格模式（发现时间戳异常就停止）": "strict",
+}
+
 STAGE_LABELS = {
     "preflight": "检查输入与工具",
     "probe": "分析视频参数",
@@ -47,6 +52,9 @@ class HiddenPreviewApp(ttk.Frame):
         self.preview_source = tk.StringVar()
         self.output_dir = tk.StringVar(value=str(default_output_dir))
         self.fit_label = tk.StringVar(value="请选择画面适配方式")
+        self.timeline_label = tk.StringVar(
+            value="保留公开时长，缺帧自动补帧（推荐）"
+        )
         self.keep_artifacts = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="准备就绪")
         self.tool_status = tk.StringVar(value="正在查找 FFmpeg…")
@@ -61,7 +69,7 @@ class HiddenPreviewApp(ttk.Frame):
         self.master.columnconfigure(0, weight=1)
         self.master.rowconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
-        self.rowconfigure(9, weight=1)
+        self.rowconfigure(10, weight=1)
 
         title = ttk.Label(
             self,
@@ -96,8 +104,9 @@ class HiddenPreviewApp(ttk.Frame):
             guide,
             text=(
                 "1. Video A 是正常播放内容；预览图片 / Video B 是隐藏预览。  "
-                "2. 选择画面适配方式和输出文件夹。  "
-                "3. 点击生成，显示 PASS 后使用 fin.mp4。"
+                "2. 推荐“保留公开时长，缺帧自动补帧”。  "
+                "3. 选择画面适配方式和输出文件夹。  "
+                "4. 点击生成，显示 PASS 后使用 fin.mp4。"
             ),
             justify=tk.LEFT,
             wraplength=780,
@@ -135,19 +144,32 @@ class HiddenPreviewApp(ttk.Frame):
             row=6, column=1, columnspan=2, sticky="ew", pady=7
         )
 
+        ttk.Label(self, text="时间线处理").grid(
+            row=7, column=0, sticky="w", pady=7
+        )
+        self.timeline_box = ttk.Combobox(
+            self,
+            textvariable=self.timeline_label,
+            values=list(TIMELINE_LABELS),
+            state="readonly",
+        )
+        self.timeline_box.grid(
+            row=7, column=1, columnspan=2, sticky="ew", pady=7
+        )
+
         self.keep_box = ttk.Checkbutton(
             self,
             text="保留临时验证报告（默认成功后自动清理）",
             variable=self.keep_artifacts,
         )
         self.keep_box.grid(
-            row=7, column=1, columnspan=2, sticky="w", pady=(4, 2)
+            row=8, column=1, columnspan=2, sticky="w", pady=(4, 2)
         )
         ttk.Label(
             self,
             textvariable=self.tool_status,
             foreground="#555555",
-        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(4, 10))
+        ).grid(row=9, column=0, columnspan=3, sticky="w", pady=(4, 10))
 
         self.log = scrolledtext.ScrolledText(
             self,
@@ -157,7 +179,7 @@ class HiddenPreviewApp(ttk.Frame):
             font=("Consolas", 10),
         )
         self.log.grid(
-            row=9,
+            row=10,
             column=0,
             columnspan=3,
             sticky="nsew",
@@ -166,15 +188,15 @@ class HiddenPreviewApp(ttk.Frame):
 
         self.progress = ttk.Progressbar(self, mode="indeterminate")
         self.progress.grid(
-            row=10, column=0, columnspan=3, sticky="ew", pady=(0, 8)
+            row=11, column=0, columnspan=3, sticky="ew", pady=(0, 8)
         )
         ttk.Label(self, textvariable=self.status).grid(
-            row=11, column=0, columnspan=3, sticky="w"
+            row=12, column=0, columnspan=3, sticky="w"
         )
 
         button_frame = ttk.Frame(self)
         button_frame.grid(
-            row=12, column=0, columnspan=3, sticky="e", pady=(12, 0)
+            row=13, column=0, columnspan=3, sticky="e", pady=(12, 0)
         )
         ttk.Button(
             button_frame,
@@ -205,7 +227,7 @@ class HiddenPreviewApp(ttk.Frame):
             wraplength=760,
         )
         warning.grid(
-            row=13,
+            row=14,
             column=0,
             columnspan=3,
             sticky="w",
@@ -216,7 +238,7 @@ class HiddenPreviewApp(ttk.Frame):
             text=f"发布人：{__publisher__}    版本：v{__version__}",
             foreground="#666666",
         ).grid(
-            row=14,
+            row=15,
             column=0,
             columnspan=3,
             sticky="e",
@@ -286,11 +308,13 @@ class HiddenPreviewApp(ttk.Frame):
         messagebox.showinfo(
             "使用说明",
             (
-                "1. Video A：最终正常播放的视频，必须是恒定帧率且只有一个音轨。\n"
+                "1. Video A：最终正常播放的视频，必须只有一个视频轨和一个音轨。\n"
                 "2. 预览素材：选择一张图片或 Video B；短视频会自动循环。\n"
                 "3. 画面适配：完整显示补黑边、铺满裁切或直接拉伸。\n"
-                "4. 输出：选择没有 fin.mp4 的文件夹，程序不会覆盖旧文件。\n"
-                "5. 结果：显示 PASS 后使用 fin.mp4；失败时按提示查看临时诊断目录。\n\n"
+                "4. 时间线处理：推荐模式会保持原视频公开时长，并自动补齐时间戳缺帧；"
+                "严格模式遇到异常就停止。\n"
+                "5. 输出：选择没有 fin.mp4 的文件夹，程序不会覆盖旧文件。\n"
+                "6. 结果：显示 PASS 后使用 fin.mp4；失败时按提示查看临时诊断目录。\n\n"
                 "full-portable 发布包已附带 ffmpeg 和 ffprobe，请与主程序放在"
                 "同一目录。平台是否采用隐藏预览取决于其是否忽略 MP4 edit "
                 "list，本工具不保证平台结果。"
@@ -310,6 +334,9 @@ class HiddenPreviewApp(ttk.Frame):
             state=tk.DISABLED if running else tk.NORMAL
         )
         self.fit_box.configure(
+            state=tk.DISABLED if running else "readonly"
+        )
+        self.timeline_box.configure(
             state=tk.DISABLED if running else "readonly"
         )
         self.keep_box.configure(
@@ -336,6 +363,8 @@ class HiddenPreviewApp(ttk.Frame):
                 raise ValueError("请选择输出文件夹。")
             if self.fit_label.get() not in FIT_LABELS:
                 raise ValueError("请选择一种画面适配方式。")
+            if self.timeline_label.get() not in TIMELINE_LABELS:
+                raise ValueError("请选择一种时间线处理方式。")
             output = output_dir / "fin.mp4"
             if output.exists():
                 raise FileExistsError(
@@ -346,6 +375,9 @@ class HiddenPreviewApp(ttk.Frame):
                 preview_source=preview_source,
                 output=output,
                 fit=FIT_LABELS[self.fit_label.get()],
+                timeline_policy=TIMELINE_LABELS[
+                    self.timeline_label.get()
+                ],
                 keep_artifacts=self.keep_artifacts.get(),
             )
         except Exception as exc:
@@ -358,6 +390,7 @@ class HiddenPreviewApp(ttk.Frame):
         self._append_log(f"Video A: {options.main_video}")
         self._append_log(f"预览素材: {options.preview_source}")
         self._append_log(f"输出: {options.output}")
+        self._append_log(f"时间线处理: {self.timeline_label.get()}")
         worker = threading.Thread(
             target=self._worker,
             args=(options,),
@@ -411,6 +444,8 @@ class HiddenPreviewApp(ttk.Frame):
                 f"{outcome.width}x{outcome.height} · {outcome.fps} fps\n"
                 f"公开帧 {outcome.public_frames} · "
                 f"物理帧 {outcome.physical_frames}\n"
+                f"源帧 {outcome.source_frames} · "
+                f"自动补帧 {outcome.missing_frame_slots}\n"
                 f"SHA-256：{outcome.sha256}"
             ),
             parent=self.master,

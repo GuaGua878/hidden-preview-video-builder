@@ -11,6 +11,7 @@ from unittest.mock import patch
 from hidden_preview_builder.engine import (
     aspect_differs,
     choose_timescale,
+    main_video_spec,
     resolve_media_tools,
     scale_filter,
 )
@@ -18,6 +19,39 @@ from hidden_preview_builder.service import _is_strict_child
 
 
 class EngineUnitTests(unittest.TestCase):
+    @staticmethod
+    def irregular_timeline_fixture() -> tuple[dict, dict]:
+        probe = {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "r_frame_rate": "30/1",
+                    "avg_frame_rate": "360000/12001",
+                    "time_base": "1/90000",
+                    "nb_frames": "4",
+                    "nb_read_frames": "4",
+                    "width": 1920,
+                    "height": 1080,
+                },
+                {
+                    "codec_type": "audio",
+                    "sample_rate": "48000",
+                    "channels": 2,
+                },
+            ],
+            "format": {"duration": "0.266667"},
+        }
+        frames = {
+            "frames": [
+                {"pts": 0, "duration": 3000},
+                {"pts": 3000, "duration": 3000},
+                {"pts": 6000, "duration": 3000},
+                # Five nominal frame intervals after the preceding frame.
+                {"pts": 21000, "duration": 3000},
+            ]
+        }
+        return probe, frames
+
     def test_choose_timescale_for_integer_fps(self) -> None:
         self.assertEqual(choose_timescale(Fraction(30, 1)), (30000, 1000))
 
@@ -38,6 +72,33 @@ class EngineUnitTests(unittest.TestCase):
             scale_filter(1920, 1080, "stretch"),
             "scale=1920:1080:flags=lanczos:out_range=tv",
         )
+
+    def test_strict_timeline_policy_rejects_pts_gap(self) -> None:
+        probe, frames = self.irregular_timeline_fixture()
+        with self.assertRaisesRegex(RuntimeError, "variable-frame-rate"):
+            main_video_spec(
+                probe,
+                frames,
+                timeline_policy="strict",
+            )
+
+    def test_preserve_duration_policy_normalizes_pts_gap(self) -> None:
+        probe, frames = self.irregular_timeline_fixture()
+
+        spec = main_video_spec(
+            probe,
+            frames,
+            timeline_policy="preserve-duration",
+        )
+
+        self.assertEqual(spec["fps"], Fraction(30, 1))
+        self.assertEqual(spec["source_frame_count"], 4)
+        self.assertEqual(spec["frame_count"], 8)
+        self.assertEqual(spec["duration"], Fraction(4, 15))
+        self.assertTrue(spec["timeline"]["normalized"])
+        self.assertEqual(spec["timeline"]["pts_discontinuities"], 1)
+        self.assertEqual(spec["timeline"]["missing_frame_slots"], 4)
+        self.assertEqual(choose_timescale(spec["fps"]), (30000, 1000))
 
     def test_resolver_skips_directory_with_lone_ffmpeg(self) -> None:
         ffmpeg_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"

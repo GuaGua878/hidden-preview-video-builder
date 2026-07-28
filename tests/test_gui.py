@@ -32,6 +32,7 @@ class GuiTests(unittest.TestCase):
             text = "\n".join(widget_texts(root))
             self.assertIn("简单说明", text)
             self.assertIn("Video A 是正常播放内容", text)
+            self.assertIn("保留公开时长，缺帧自动补帧", text)
             self.assertIn("使用说明", text)
             self.assertIn("发布人：教主", text)
         finally:
