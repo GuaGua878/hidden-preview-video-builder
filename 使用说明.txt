@@ -1,0 +1,3 @@
+双击HiddenPreviewBuilder.exe打开程序。
+
+请保持HiddenPreviewBuilder.exe、ffmpeg.exe和ffprobe.exe在同一文件夹内。

@@ -14,7 +14,7 @@
 包内已附带 `ffmpeg.exe` 与 `ffprobe.exe`，无需另外安装。请保留它们与主
 程序在同一目录。随包 FFmpeg 为 GPL v3 构建，许可、原始构建说明和源码入口
 位于 `third-party\ffmpeg\`；项目代码本身采用 MIT License。具体用法见
-压缩包内的 `QUICKSTART.zh-CN.md`。
+压缩包根目录的 `使用说明.txt` 和 `QUICKSTART.zh-CN.md`。
 
 ## 验证
 

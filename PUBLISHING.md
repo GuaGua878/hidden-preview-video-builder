@@ -49,7 +49,8 @@ git push origin v0.1.0
 5. 同时上传对应 `.sha256.txt` 和 `.manifest.json`。
 6. 不生成或上传 slim 版本。
 7. 发布前确认 ZIP 根目录包含 EXE、`ffmpeg.exe` 和 `ffprobe.exe`，且
-   `third-party\ffmpeg\` 中包含 GPL v3 全文、原始构建说明和源码入口。
+   包含 `使用说明.txt`；`third-party\ffmpeg\` 中包含 GPL v3 全文、原始
+   构建说明和源码入口。
 8. 确认包内没有真实测试媒体、本机绝对路径或自检临时报告。
 
 GitHub 自动生成的 Source code ZIP/TAR 即为源码包，不要把 `.venv`、`build`、

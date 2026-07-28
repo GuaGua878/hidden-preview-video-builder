@@ -119,8 +119,9 @@ ZIP。FFmpeg 与 ffprobe 作为独立文件放在 EXE 旁边，并不嵌入主�
 产物位于 `release\`。唯一的默认程序包是
 `HiddenPreviewBuilder-v0.1.0-windows-x64-full-portable.zip`，不再生成
 slim 版本。ZIP 内含主程序、`ffmpeg.exe`、`ffprobe.exe`、简明说明、MIT
-License、GPL v3 全文、FFmpeg 原始构建说明与源码入口；旁边还会生成 ZIP 的
-SHA-256 文件和发布 manifest。若 FFmpeg 不在 PATH，可执行
+License、GPL v3 全文、FFmpeg 原始构建说明与源码入口。普通用户解压后先看
+根目录的 `使用说明.txt`；旁边还会生成 ZIP 的 SHA-256 文件和发布 manifest。
+若 FFmpeg 不在 PATH，可执行
 `.\package-release.ps1 -FFmpegDir "D:\path\to\ffmpeg\bin"`。
 完整发布步骤见 [PUBLISHING.md](PUBLISHING.md)。
 

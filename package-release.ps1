@@ -184,6 +184,7 @@ try {
     Copy-Item -LiteralPath $ffmpegPath -Destination $staging
     Copy-Item -LiteralPath $ffprobePath -Destination $staging
     foreach ($document in @(
+        "使用说明.txt",
         "QUICKSTART.zh-CN.md",
         "README.md",
         "LICENSE",
