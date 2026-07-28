@@ -2,24 +2,26 @@
 
 发布人：教主
 
-当前版本：v0.1.1
+当前版本：v0.1.2
 
 ## 1. 最终检查
 
 ```powershell
-.\package-release.ps1
+pwsh -File .\package-release.ps1
 git status --short
 ```
 
 若 FFmpeg 不在 PATH，改用：
 
 ```powershell
-.\package-release.ps1 -FFmpegDir "D:\path\to\ffmpeg\bin"
+pwsh -File .\package-release.ps1 -FFmpegDir "D:\path\to\ffmpeg\bin"
 ```
 
 确认测试、EXE 自检、full-portable 同目录工具解析、Windows 文件属性和
 release manifest 全部通过。打包脚本只接受同时包含 `ffmpeg.exe` 与
 `ffprobe.exe` 的目录，并要求当前构建为启用 `libx264` 的 GPL v3 静态构建。
+打包脚本要求 PowerShell 7（`pwsh`），避免 Windows PowerShell 5.1 将无 BOM
+UTF-8 文件中的中文发布者与文件名按旧代码页错误解码。
 
 ## 2. 提交源码
 
@@ -31,21 +33,21 @@ release manifest 全部通过。打包脚本只接受同时包含 `ffmpeg.exe` �
 
 ```powershell
 git add .
-git commit -m "Release v0.1.1"
-git tag -a v0.1.1 -m "Hidden Preview Builder v0.1.1"
+git commit -m "Release v0.1.2"
+git tag -a v0.1.2 -m "Hidden Preview Builder v0.1.2"
 git push -u origin main
-git push origin v0.1.1
+git push origin v0.1.2
 ```
 
 执行前请先确认 Git 的邮箱、远程仓库地址和 GitHub 账号均正确。
 
 ## 3. 创建 GitHub Release
 
-1. 选择 tag `v0.1.1`。
-2. 标题填写 `Hidden Preview Builder v0.1.1`。
-3. 正文复制 `RELEASE_NOTES-v0.1.1.md`。
+1. 选择 tag `v0.1.2`。
+2. 标题填写 `Hidden Preview Builder v0.1.2`。
+3. 正文复制 `RELEASE_NOTES-v0.1.2.md`。
 4. 上传唯一的默认程序包
-   `release\HiddenPreviewBuilder-v0.1.1-windows-x64-full-portable.zip`。
+   `release\HiddenPreviewBuilder-v0.1.2-windows-x64-full-portable.zip`。
 5. 同时上传对应 `.sha256.txt` 和 `.manifest.json`。
 6. 不生成或上传 slim 版本。
 7. 发布前确认 ZIP 根目录包含 EXE、`ffmpeg.exe` 和 `ffprobe.exe`，且

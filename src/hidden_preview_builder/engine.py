@@ -93,13 +93,9 @@ def resolve_media_tools(
     configured_dir = os.environ.get("HIDDEN_PREVIEW_FFMPEG_DIR")
     if configured_dir:
         candidate_dirs.append(Path(configured_dir).expanduser())
-    for command in ("ffprobe", "ffmpeg"):
-        resolved = shutil.which(command)
-        if resolved:
-            candidate_dirs.append(Path(resolved).resolve().parent)
     for entry in os.environ.get("PATH", "").split(os.pathsep):
-        cleaned = entry.strip().strip('"')
-        if cleaned:
+        cleaned = os.path.expandvars(entry.strip().strip('"'))
+        if cleaned and cleaned != ".":
             candidate_dirs.append(Path(cleaned).expanduser())
 
     seen: set[str] = set()
@@ -1085,20 +1081,21 @@ def main_video_spec(
     }
 
 
-def encode_command(
+def staged_encode_plan(
     *,
     ffmpeg: str,
     main_video: Path,
     preview_source: Path,
     preview_kind: str,
     intermediate: Path,
+    artifacts: Path,
     spec: dict[str, Any],
     fit: str,
     preset: str,
     crf: int,
     audio_bitrate: str,
     video_timescale: int,
-) -> list[str]:
+) -> dict[str, Any]:
     fps: Fraction = spec["fps"]
     fps_text = fraction_text(fps)
     frames = spec["frame_count"]
@@ -1124,46 +1121,33 @@ def encode_command(
         f"apad=whole_dur={duration_decimal},"
         f"atrim=duration={duration_decimal},asetpts=PTS-STARTPTS[audio]"
     )
-    filter_graph = (
-        f"[1:v]{preview_chain};"
-        f"[0:v]{main_chain};"
-        "[preview][main]concat=n=2:v=1:a=0[video];"
-        f"[0:a]{audio_chain}"
-    )
-
-    command = [ffmpeg, "-hide_banner", "-y", "-i", str(main_video)]
-    if preview_kind == "image":
-        command.extend(
-            [
-                "-loop",
-                "1",
-                "-framerate",
-                fps_text,
-                "-i",
-                str(preview_source),
-            ]
-        )
-    else:
-        command.extend(["-stream_loop", "-1", "-i", str(preview_source)])
     keyint = max(1, round(float(fps)))
     x264_params = (
         f"scenecut=0:open-gop=0:bframes=3:b-adapt=2:ref=1:"
         f"keyint={keyint}:min-keyint={keyint}"
     )
-    command.extend(
-        [
-            "-filter_complex",
-            filter_graph,
-            "-map",
-            "[video]",
-            "-map",
-            "[audio]",
+    preview_segment = artifacts / ".fin.preview-segment.tmp.mp4"
+    main_segment = artifacts / ".fin.main-segment.tmp.mp4"
+    joined_video = artifacts / ".fin.joined-video.tmp.mp4"
+    concat_list = artifacts / ".fin.video-concat.txt"
+    concat_list.write_text(
+        "file '"
+        + str(preview_segment.resolve()).replace("\\", "/")
+        + "'\nfile '"
+        + str(main_segment.resolve()).replace("\\", "/")
+        + "'\n",
+        encoding="utf-8",
+    )
+
+    def video_output_options(path: Path) -> list[str]:
+        return [
             "-frames:v",
-            str(frames * 2),
+            str(frames),
             "-r",
             fps_text,
             "-fps_mode",
             "cfr",
+            "-an",
             "-c:v",
             "libx264",
             "-preset",
@@ -1185,25 +1169,7 @@ def encode_command(
             "-x264-params",
             x264_params,
             "-force_key_frames",
-            f"0,{duration_decimal}",
-            "-c:a",
-            "aac",
-            "-profile:a",
-            "aac_low",
-            "-b:a",
-            audio_bitrate,
-            "-ar",
-            str(spec["audio_sample_rate"]),
-            "-ac",
-            str(spec["audio_channels"]),
-            "-map_metadata",
-            "-1",
-            "-metadata",
-            "title=Hidden Preview Edit-List Video",
-            "-metadata:s:v:0",
-            "handler_name=VideoHandler",
-            "-metadata:s:a:0",
-            "handler_name=SoundHandler",
+            "0",
             "-video_track_timescale",
             str(video_timescale),
             "-movie_timescale",
@@ -1214,10 +1180,133 @@ def encode_command(
             "+faststart",
             "-brand",
             "mp42",
-            str(intermediate),
+            str(path),
+        ]
+
+    preview_command = [ffmpeg, "-hide_banner", "-y"]
+    if preview_kind == "image":
+        preview_command.extend(
+            [
+                "-loop",
+                "1",
+                "-framerate",
+                fps_text,
+                "-i",
+                str(preview_source),
+            ]
+        )
+    else:
+        preview_command.extend(
+            ["-stream_loop", "-1", "-i", str(preview_source)]
+        )
+    preview_command.extend(
+        [
+            "-filter_complex",
+            f"[0:v]{preview_chain}",
+            "-map",
+            "[preview]",
+            *video_output_options(preview_segment),
         ]
     )
-    return command
+    main_command = [
+        ffmpeg,
+        "-hide_banner",
+        "-y",
+        "-i",
+        str(main_video),
+        "-filter_complex",
+        f"[0:v]{main_chain}",
+        "-map",
+        "[main]",
+        *video_output_options(main_segment),
+    ]
+    concat_command = [
+        ffmpeg,
+        "-hide_banner",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_list),
+        "-map",
+        "0:v:0",
+        "-c:v",
+        "copy",
+        "-an",
+        "-video_track_timescale",
+        str(video_timescale),
+        "-movie_timescale",
+        str(video_timescale),
+        "-use_editlist",
+        "1",
+        "-movflags",
+        "+faststart",
+        "-brand",
+        "mp42",
+        str(joined_video),
+    ]
+    mux_command = [
+        ffmpeg,
+        "-hide_banner",
+        "-y",
+        "-i",
+        str(joined_video),
+        "-i",
+        str(main_video),
+        "-filter_complex",
+        f"[1:a]{audio_chain}",
+        "-map",
+        "0:v:0",
+        "-map",
+        "[audio]",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-profile:a",
+        "aac_low",
+        "-b:a",
+        audio_bitrate,
+        "-ar",
+        str(spec["audio_sample_rate"]),
+        "-ac",
+        str(spec["audio_channels"]),
+        "-map_metadata",
+        "-1",
+        "-metadata",
+        "title=Hidden Preview Edit-List Video",
+        "-metadata:s:v:0",
+        "handler_name=VideoHandler",
+        "-metadata:s:a:0",
+        "handler_name=SoundHandler",
+        "-video_track_timescale",
+        str(video_timescale),
+        "-movie_timescale",
+        str(video_timescale),
+        "-use_editlist",
+        "1",
+        "-movflags",
+        "+faststart",
+        "-brand",
+        "mp42",
+        str(intermediate),
+    ]
+    return {
+        "stages": [
+            {"name": "preview", "command": preview_command},
+            {"name": "main", "command": main_command},
+            {"name": "concat", "command": concat_command},
+            {"name": "mux", "command": mux_command},
+        ],
+        "cleanup": [
+            preview_segment,
+            main_segment,
+            joined_video,
+            concat_list,
+        ],
+    }
 
 
 def probe_input(
@@ -1723,12 +1812,13 @@ def build_hidden_preview(
             ensure_ascii=False,
         )
     )
-    command = encode_command(
+    encode_plan = staged_encode_plan(
         ffmpeg=ffmpeg,
         main_video=main_video,
         preview_source=preview_source,
         preview_kind=preview_kind,
         intermediate=intermediate,
+        artifacts=artifacts,
         spec=spec,
         fit=fit,
         preset=args.preset,
@@ -1736,8 +1826,21 @@ def build_hidden_preview(
         audio_bitrate=args.audio_bitrate,
         video_timescale=video_timescale,
     )
-    progress_callback("encode", "Encoding hidden and public video segments")
-    runner.run(command)
+    stage_messages = {
+        "preview": "Encoding the hidden preview segment",
+        "main": "Encoding the public Video A segment",
+        "concat": "Joining the encoded video segments",
+        "mux": "Adding Video A audio",
+    }
+    for stage in encode_plan["stages"]:
+        stage_name = str(stage["name"])
+        progress_callback(
+            f"encode_{stage_name}",
+            stage_messages[stage_name],
+        )
+        runner.run(stage["command"])
+    for staged_path in encode_plan["cleanup"]:
+        staged_path.unlink()
     progress_callback("patch", "Patching MP4 edit and timing boxes")
     patch = patch_container(
         intermediate,

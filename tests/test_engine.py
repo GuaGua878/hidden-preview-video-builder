@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from hidden_preview_builder.engine import (
     main_video_spec,
     resolve_media_tools,
     scale_filter,
+    staged_encode_plan,
 )
 from hidden_preview_builder.service import _is_strict_child
 
@@ -120,10 +122,58 @@ class EngineUnitTests(unittest.TestCase):
                     )
                 },
                 clear=True,
+            ), patch(
+                "hidden_preview_builder.engine.shutil.which",
+                side_effect=AssertionError(
+                    "Resolver must not use implicit current-directory lookup"
+                ),
             ):
                 ffmpeg, ffprobe = resolve_media_tools()
             self.assertEqual(Path(ffmpeg).parent, complete.resolve())
             self.assertEqual(Path(ffprobe).parent, complete.resolve())
+
+    def test_staged_encode_plan_avoids_filter_concat(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            plan = staged_encode_plan(
+                ffmpeg="ffmpeg",
+                main_video=root / "main.mp4",
+                preview_source=root / "preview.mp4",
+                preview_kind="video",
+                intermediate=artifacts / ".fin.physical.tmp.mp4",
+                artifacts=artifacts,
+                spec={
+                    "fps": Fraction(60, 1),
+                    "frame_count": 120,
+                    "duration": Fraction(2, 1),
+                    "width": 3840,
+                    "height": 2160,
+                    "audio_sample_rate": 48000,
+                    "audio_channels": 2,
+                },
+                fit="contain",
+                preset="medium",
+                crf=18,
+                audio_bitrate="256k",
+                video_timescale=60000,
+            )
+
+            self.assertEqual(
+                [stage["name"] for stage in plan["stages"]],
+                ["preview", "main", "concat", "mux"],
+            )
+            command_text = "\n".join(
+                subprocess.list2cmdline(stage["command"])
+                for stage in plan["stages"]
+            )
+            self.assertNotIn("concat=n=2", command_text)
+            self.assertIn("-f concat", command_text)
+            self.assertIn("-c:v copy", command_text)
+            self.assertTrue(
+                (artifacts / ".fin.video-concat.txt").is_file()
+            )
 
     def test_frozen_app_prefers_side_by_side_tools(self) -> None:
         ffmpeg_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
