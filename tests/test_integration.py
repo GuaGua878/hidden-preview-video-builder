@@ -94,9 +94,25 @@ class WorkflowIntegrationTests(unittest.TestCase):
                 ]
             )
 
-            with patch(
-                "hidden_preview_builder.service.tempfile.gettempdir",
-                return_value=str(app_temp),
+            with (
+                patch(
+                    "hidden_preview_builder.service.tempfile.gettempdir",
+                    return_value=str(app_temp),
+                ),
+                patch.object(
+                    Path,
+                    "read_bytes",
+                    side_effect=AssertionError(
+                        "MP4 patching must not copy the complete file"
+                    ),
+                ),
+                patch.object(
+                    Path,
+                    "write_bytes",
+                    side_effect=AssertionError(
+                        "MP4 patching must write only validated fields"
+                    ),
+                ),
             ):
                 outcome = run_build(
                     BuildOptions(

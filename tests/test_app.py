@@ -11,6 +11,16 @@ from hidden_preview_builder.app import run_self_test
 
 
 class AppTests(unittest.TestCase):
+    def test_root_instructions_include_qq_performance_warning(self) -> None:
+        instructions = (
+            Path(__file__).resolve().parents[1] / "使用说明.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "实测2分钟4K视频+静态图片用时6分钟,"
+            "主要取决于电脑配置,别塞一个超长视频把自己卡死了",
+            instructions,
+        )
+
     def test_self_test_report_records_resolved_media_tools(self) -> None:
         root = Mock()
         with tempfile.TemporaryDirectory() as temp:

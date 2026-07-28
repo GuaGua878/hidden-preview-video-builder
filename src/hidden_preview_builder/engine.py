@@ -16,6 +16,7 @@ import csv
 import hashlib
 import json
 import math
+import mmap
 import os
 import shutil
 import struct
@@ -566,8 +567,7 @@ def parse_ftyp(data: bytes | bytearray, context: dict[str, Any]) -> dict:
     }
 
 
-def full_box_audit(path: Path) -> dict[str, Any]:
-    data = path.read_bytes()
+def _full_box_audit_data(data: Any) -> dict[str, Any]:
     context = find_context(data)
     mvhd_version, movie_timescale, movie_duration = read_mvhd(
         data, context["mvhd"]
@@ -613,6 +613,14 @@ def full_box_audit(path: Path) -> dict[str, Any]:
     }
 
 
+def full_box_audit(path: Path) -> dict[str, Any]:
+    with path.open("rb") as handle:
+        with mmap.mmap(
+            handle.fileno(), 0, access=mmap.ACCESS_READ
+        ) as data:
+            return _full_box_audit_data(data)
+
+
 def patch_container(
     intermediate: Path,
     output: Path,
@@ -622,95 +630,172 @@ def patch_container(
 ) -> dict[str, Any]:
     if output.exists():
         raise FileExistsError(output)
-    data = bytearray(intermediate.read_bytes())
-    context = find_context(data)
-    video = context["tracks"]["vide"]
-    if video["ctts"] is None:
-        raise RuntimeError(
-            "Encoded H.264 track has no ctts; cannot build the validated "
-            "raw-origin-zero path"
-        )
-    if video["elst"] is None:
-        raise RuntimeError("Encoded video track has no edit list")
-    ctts_before = read_ctts(data, video["ctts"])
-    if ctts_before["version"] != 0:
-        raise RuntimeError(f"Expected ctts version 0: {ctts_before}")
-    first_entry = ctts_before["entries"][0]
-    if first_entry["sample_offset"] <= 0:
-        raise RuntimeError(
-            f"First ctts run must be positive before patch: {first_entry}"
-        )
-
-    # The initial IDR produces a dedicated first CTTS run. Zero only that run
-    # so the physical composition origin is exactly zero while leaving the
-    # remaining B-picture timing intact.
-    if first_entry["sample_count"] >= target_frames:
-        raise RuntimeError(
-            "The first CTTS run reaches the public Video-A segment; the "
-            "encoder did not isolate the hidden preroll timing"
-        )
-    struct.pack_into(">I", data, video["ctts"].payload + 12, 0)
-    timeline = expand_video_timeline(data, context)
-    display_pts = timeline["display_pts"]
-    if len(display_pts) != target_frames * 2:
-        raise RuntimeError(
-            f"Physical display frames {len(display_pts)} != "
-            f"{target_frames * 2}"
-        )
-    if display_pts[0] != 0:
-        raise RuntimeError(
-            f"Raw first composition PTS is {display_pts[0]}, expected 0"
-        )
-    media_time = display_pts[target_frames]
-    visible_pts = display_pts[target_frames : target_frames * 2]
-    expected_visible = [
-        media_time + index * frame_ticks
-        for index in range(target_frames)
-    ]
-    if visible_pts != expected_visible:
-        first_mismatch = next(
-            (
-                index
-                for index, (actual, expected) in enumerate(
-                    zip(visible_pts, expected_visible)
+    with intermediate.open("rb") as source:
+        with mmap.mmap(
+            source.fileno(), 0, access=mmap.ACCESS_COPY
+        ) as data:
+            context = find_context(data)
+            video = context["tracks"]["vide"]
+            if video["ctts"] is None:
+                raise RuntimeError(
+                    "Encoded H.264 track has no ctts; cannot build the "
+                    "validated raw-origin-zero path"
                 )
-                if actual != expected
-            ),
-            None,
-        )
-        raise RuntimeError(
-            "Visible composition timeline is not uniform; first mismatch "
-            f"at {first_mismatch}"
-        )
+            if video["elst"] is None:
+                raise RuntimeError("Encoded video track has no edit list")
+            ctts_before = read_ctts(data, video["ctts"])
+            if ctts_before["version"] != 0:
+                raise RuntimeError(
+                    f"Expected ctts version 0: {ctts_before}"
+                )
+            first_entry = ctts_before["entries"][0]
+            if first_entry["sample_offset"] <= 0:
+                raise RuntimeError(
+                    "First ctts run must be positive before patch: "
+                    f"{first_entry}"
+                )
 
-    _, movie_timescale, _ = read_mvhd(data, context["mvhd"])
-    _, video_timescale, _ = read_mdhd(data, video["mdhd"])
-    if movie_timescale != video_timescale:
-        raise RuntimeError(
-            f"Movie/video timescales differ: {movie_timescale} vs "
-            f"{video_timescale}"
-        )
-    public_duration = target_frames * frame_ticks
-    patch_elst_single_entry(
-        data,
-        video["elst"],
-        segment_duration=public_duration,
-        media_time=media_time,
-    )
-    patch_mvhd_duration(data, context["mvhd"], public_duration)
-    patch_tkhd_duration(data, video["tkhd"], public_duration)
+            # The initial IDR produces a dedicated first CTTS run. Zero only
+            # that run so the physical composition origin is exactly zero
+            # while leaving the remaining B-picture timing intact.
+            if first_entry["sample_count"] >= target_frames:
+                raise RuntimeError(
+                    "The first CTTS run reaches the public Video-A segment; "
+                    "the encoder did not isolate the hidden preroll timing"
+                )
+            ctts_offset_position = video["ctts"].payload + 12
+            struct.pack_into(">I", data, ctts_offset_position, 0)
+            timeline = expand_video_timeline(data, context)
+            display_pts = timeline["display_pts"]
+            if len(display_pts) != target_frames * 2:
+                raise RuntimeError(
+                    f"Physical display frames {len(display_pts)} != "
+                    f"{target_frames * 2}"
+                )
+            if display_pts[0] != 0:
+                raise RuntimeError(
+                    "Raw first composition PTS is "
+                    f"{display_pts[0]}, expected 0"
+                )
+            media_time = display_pts[target_frames]
+            visible_pts = display_pts[
+                target_frames : target_frames * 2
+            ]
+            expected_visible = [
+                media_time + index * frame_ticks
+                for index in range(target_frames)
+            ]
+            if visible_pts != expected_visible:
+                first_mismatch = next(
+                    (
+                        index
+                        for index, (actual, expected) in enumerate(
+                            zip(visible_pts, expected_visible)
+                        )
+                        if actual != expected
+                    ),
+                    None,
+                )
+                raise RuntimeError(
+                    "Visible composition timeline is not uniform; first "
+                    f"mismatch at {first_mismatch}"
+                )
 
-    output.write_bytes(data)
-    return {
-        "first_ctts_entry_before": first_entry,
-        "first_ctts_offset_after": 0,
-        "raw_first_composition_pts": display_pts[0],
-        "video_elst_media_time": media_time,
-        "video_elst_media_time_frames": media_time // frame_ticks,
-        "video_elst_segment_duration": public_duration,
-        "movie_timescale": movie_timescale,
-        "video_timescale": video_timescale,
-    }
+            mvhd_version, movie_timescale, _ = read_mvhd(
+                data, context["mvhd"]
+            )
+            _, video_timescale, _ = read_mdhd(data, video["mdhd"])
+            if movie_timescale != video_timescale:
+                raise RuntimeError(
+                    "Movie/video timescales differ: "
+                    f"{movie_timescale} vs {video_timescale}"
+                )
+            public_duration = target_frames * frame_ticks
+            elst_version = data[video["elst"].payload]
+            tkhd_version = data[video["tkhd"].payload]
+            patch_elst_single_entry(
+                data,
+                video["elst"],
+                segment_duration=public_duration,
+                media_time=media_time,
+            )
+            patch_mvhd_duration(
+                data, context["mvhd"], public_duration
+            )
+            patch_tkhd_duration(
+                data, video["tkhd"], public_duration
+            )
+
+            mvhd_duration_position = (
+                context["mvhd"].payload
+                + (16 if mvhd_version == 0 else 24)
+            )
+            mvhd_duration_size = 4 if mvhd_version == 0 else 8
+            tkhd_duration_position = (
+                video["tkhd"].payload
+                + (20 if tkhd_version == 0 else 28)
+            )
+            tkhd_duration_size = 4 if tkhd_version == 0 else 8
+            elst_values_position = video["elst"].payload + 8
+            elst_values_size = 8 if elst_version == 0 else 16
+            patch_regions = [
+                (
+                    ctts_offset_position,
+                    bytes(
+                        data[
+                            ctts_offset_position : ctts_offset_position + 4
+                        ]
+                    ),
+                ),
+                (
+                    elst_values_position,
+                    bytes(
+                        data[
+                            elst_values_position:
+                            elst_values_position + elst_values_size
+                        ]
+                    ),
+                ),
+                (
+                    mvhd_duration_position,
+                    bytes(
+                        data[
+                            mvhd_duration_position:
+                            mvhd_duration_position + mvhd_duration_size
+                        ]
+                    ),
+                ),
+                (
+                    tkhd_duration_position,
+                    bytes(
+                        data[
+                            tkhd_duration_position:
+                            tkhd_duration_position + tkhd_duration_size
+                        ]
+                    ),
+                ),
+            ]
+            result = {
+                "first_ctts_entry_before": first_entry,
+                "first_ctts_offset_after": 0,
+                "raw_first_composition_pts": display_pts[0],
+                "video_elst_media_time": media_time,
+                "video_elst_media_time_frames": media_time // frame_ticks,
+                "video_elst_segment_duration": public_duration,
+                "movie_timescale": movie_timescale,
+                "video_timescale": video_timescale,
+            }
+
+    # Validation above happens against a private copy-on-write mapping. Only
+    # the four tiny, validated fields are committed to the source file.
+    with intermediate.open("r+b") as target:
+        for position, payload in patch_regions:
+            target.seek(position)
+            target.write(payload)
+        target.flush()
+        os.fsync(target.fileno())
+    shutil.move(str(intermediate), str(output))
+    return result
 
 
 def ffprobe_json(
@@ -973,15 +1058,42 @@ def full_decode(
     output: Path,
     *,
     ignore_editlist: bool,
-) -> None:
-    command = [ffmpeg, "-v", "error"]
+) -> int:
+    command = [
+        ffmpeg,
+        "-v",
+        "error",
+        "-nostats",
+        "-progress",
+        "pipe:1",
+    ]
     if ignore_editlist:
         command.extend(["-ignore_editlist", "1"])
     command.extend(["-i", str(output), "-map", "0:v:0"])
     if not ignore_editlist:
         command.extend(["-map", "0:a:0"])
     command.extend(["-f", "null", "-"])
-    runner.run(command)
+    result = runner.run(command, capture_stdout=True)
+    decoded_frames: int | None = None
+    progress_ended = False
+    for raw_line in result.stdout.decode(
+        "utf-8", errors="replace"
+    ).splitlines():
+        key, separator, value = raw_line.partition("=")
+        if not separator:
+            continue
+        if key == "frame":
+            try:
+                decoded_frames = int(value.strip())
+            except ValueError:
+                continue
+        elif key == "progress" and value.strip() == "end":
+            progress_ended = True
+    if not progress_ended or decoded_frames is None:
+        raise RuntimeError(
+            "FFmpeg completed without a final decoded frame count"
+        )
+    return decoded_frames
 
 
 def main_video_spec(
@@ -995,9 +1107,10 @@ def main_video_spec(
     video = find_stream(main_probe, "video")
     audio = find_stream(main_probe, "audio")
     fps = nominal_video_fps(video)
-    source_frame_count = safe_int(
-        video.get("nb_read_frames"), safe_int(video.get("nb_frames"), 0)
-    )
+    source_frames = frame_probe.get("frames", [])
+    if not isinstance(source_frames, list):
+        raise RuntimeError("Invalid Video A frame probe response")
+    source_frame_count = len(source_frames)
     if source_frame_count <= 0:
         raise RuntimeError("Could not count visible frames in Video A")
     width = safe_int(video.get("width"))
@@ -1110,12 +1223,18 @@ def staged_encode_plan(
         "format=yuv420p,setparams=range=limited,"
         f"trim=end_frame={frames},{setpts}[preview]"
     )
-    main_chain = (
-        f"fps={fps_text}:round=near,"
-        f"scale={width}:{height}:flags=lanczos:out_range=tv,setsar=1,"
-        "format=yuv420p,setparams=range=limited,"
-        f"trim=end_frame={frames},{setpts}[main]"
-    )
+    if spec.get("timeline", {}).get("normalized", False):
+        main_chain = (
+            f"fps={fps_text}:round=near,"
+            f"scale={width}:{height}:flags=lanczos:out_range=tv,"
+            "setsar=1,format=yuv420p,setparams=range=limited,"
+            f"trim=end_frame={frames},{setpts}[main]"
+        )
+    else:
+        main_chain = (
+            "setsar=1,format=yuv420p,setparams=range=limited,"
+            f"trim=end_frame={frames},{setpts}[main]"
+        )
     audio_chain = (
         f"aresample={spec['audio_sample_rate']}:async=1:first_pts=0,"
         f"apad=whole_dur={duration_decimal},"
@@ -1128,7 +1247,6 @@ def staged_encode_plan(
     )
     preview_segment = artifacts / ".fin.preview-segment.tmp.mp4"
     main_segment = artifacts / ".fin.main-segment.tmp.mp4"
-    joined_video = artifacts / ".fin.joined-video.tmp.mp4"
     concat_list = artifacts / ".fin.video-concat.txt"
     concat_list.write_text(
         "file '"
@@ -1176,8 +1294,6 @@ def staged_encode_plan(
             str(video_timescale),
             "-use_editlist",
             "1",
-            "-movflags",
-            "+faststart",
             "-brand",
             "mp42",
             str(path),
@@ -1220,7 +1336,7 @@ def staged_encode_plan(
         "[main]",
         *video_output_options(main_segment),
     ]
-    concat_command = [
+    mux_command = [
         ffmpeg,
         "-hide_banner",
         "-y",
@@ -1230,29 +1346,6 @@ def staged_encode_plan(
         "0",
         "-i",
         str(concat_list),
-        "-map",
-        "0:v:0",
-        "-c:v",
-        "copy",
-        "-an",
-        "-video_track_timescale",
-        str(video_timescale),
-        "-movie_timescale",
-        str(video_timescale),
-        "-use_editlist",
-        "1",
-        "-movflags",
-        "+faststart",
-        "-brand",
-        "mp42",
-        str(joined_video),
-    ]
-    mux_command = [
-        ffmpeg,
-        "-hide_banner",
-        "-y",
-        "-i",
-        str(joined_video),
         "-i",
         str(main_video),
         "-filter_complex",
@@ -1297,13 +1390,11 @@ def staged_encode_plan(
         "stages": [
             {"name": "preview", "command": preview_command},
             {"name": "main", "command": main_command},
-            {"name": "concat", "command": concat_command},
             {"name": "mux", "command": mux_command},
         ],
         "cleanup": [
             preview_segment,
             main_segment,
-            joined_video,
             concat_list,
         ],
     }
@@ -1341,7 +1432,7 @@ def probe_video_frames(
     )
 
 
-def count_output(
+def probe_output(
     runner: Runner,
     ffprobe: str,
     path: Path,
@@ -1353,7 +1444,6 @@ def count_output(
         args.extend(["-ignore_editlist", "1"])
     args.extend(
         [
-            "-count_frames",
             "-show_streams",
             "-show_format",
         ]
@@ -1372,10 +1462,10 @@ def verify_output(
     video_timescale: int,
     frame_ticks: int,
 ) -> dict[str, Any]:
-    default_probe = count_output(
+    default_probe = probe_output(
         runner, ffprobe, output, ignore_editlist=False
     )
-    physical_probe = count_output(
+    physical_probe = probe_output(
         runner, ffprobe, output, ignore_editlist=True
     )
     (artifacts / "ffprobe_default.json").write_text(
@@ -1394,19 +1484,25 @@ def verify_output(
 
     visible_video = find_stream(default_probe, "video")
     visible_audio = find_stream(default_probe, "audio")
-    physical_video = find_stream(physical_probe, "video")
+    find_stream(physical_probe, "video")
     frames = spec["frame_count"]
     duration: Fraction = spec["duration"]
     video_track = boxes["tracks"]["vide"]
     ctts = video_track["ctts"]
     video_elst = video_track["elst"]
     expected_duration_ticks = frames * frame_ticks
+    public_decoded_frames = full_decode(
+        runner, ffmpeg, output, ignore_editlist=False
+    )
+    physical_decoded_frames = full_decode(
+        runner, ffmpeg, output, ignore_editlist=True
+    )
     checks = {
         "public_visible_frame_count": (
-            safe_int(visible_video.get("nb_read_frames")) == frames
+            public_decoded_frames == frames
         ),
         "physical_video_frame_count": (
-            safe_int(physical_video.get("nb_read_frames")) == frames * 2
+            physical_decoded_frames == frames * 2
         ),
         "public_duration_matches_video_a": (
             abs(
@@ -1479,13 +1575,6 @@ def verify_output(
     if failures:
         raise RuntimeError(f"Output validation failed: {failures}")
 
-    full_decode(
-        runner, ffmpeg, output, ignore_editlist=False
-    )
-    full_decode(
-        runner, ffmpeg, output, ignore_editlist=True
-    )
-
     physical_indices = sorted(
         {
             0,
@@ -1518,6 +1607,8 @@ def verify_output(
         "checks": checks,
         "full_decode_default": "PASS",
         "full_decode_ignore_editlist": "PASS",
+        "public_decoded_frames": public_decoded_frames,
+        "physical_decoded_frames": physical_decoded_frames,
         "physical_verification_frames": [
             {
                 "frame": index,
@@ -1745,7 +1836,7 @@ def build_hidden_preview(
 
     progress_callback("probe", "Inspecting Video A and preview source")
     main_probe = probe_input(
-        runner, ffprobe, main_video, count_frames=True
+        runner, ffprobe, main_video, count_frames=False
     )
     main_frame_probe = probe_video_frames(
         runner,
@@ -1829,8 +1920,7 @@ def build_hidden_preview(
     stage_messages = {
         "preview": "Encoding the hidden preview segment",
         "main": "Encoding the public Video A segment",
-        "concat": "Joining the encoded video segments",
-        "mux": "Adding Video A audio",
+        "mux": "Joining video segments and adding Video A audio",
     }
     for stage in encode_plan["stages"]:
         stage_name = str(stage["name"])
@@ -1848,7 +1938,6 @@ def build_hidden_preview(
         target_frames=spec["frame_count"],
         frame_ticks=frame_ticks,
     )
-    intermediate.unlink()
 
     progress_callback("verify", "Validating both public and physical tracks")
     verification = verify_output(

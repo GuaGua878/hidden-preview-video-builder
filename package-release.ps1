@@ -1,7 +1,7 @@
 #requires -Version 7.0
 
 param(
-    [string]$Version = "0.1.2",
+    [string]$Version = "0.1.3",
     [string]$FFmpegDir,
     [switch]$SkipBuild
 )

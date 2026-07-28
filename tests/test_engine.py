@@ -7,12 +7,14 @@ import tempfile
 import unittest
 from fractions import Fraction
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from hidden_preview_builder.engine import (
     aspect_differs,
     choose_timescale,
+    full_decode,
     main_video_spec,
+    probe_output,
     resolve_media_tools,
     scale_filter,
     staged_encode_plan,
@@ -102,6 +104,73 @@ class EngineUnitTests(unittest.TestCase):
         self.assertEqual(spec["timeline"]["missing_frame_slots"], 4)
         self.assertEqual(choose_timescale(spec["fps"]), (30000, 1000))
 
+    def test_frame_probe_is_the_authoritative_input_frame_count(self) -> None:
+        probe, frames = self.irregular_timeline_fixture()
+        video = probe["streams"][0]
+        video.pop("nb_frames")
+        video.pop("nb_read_frames")
+        probe["format"]["duration"] = "0.133333"
+        frames["frames"][-1] = {"pts": 9000, "duration": 3000}
+
+        spec = main_video_spec(probe, frames, timeline_policy="strict")
+
+        self.assertEqual(spec["source_frame_count"], 4)
+        self.assertEqual(spec["frame_count"], 4)
+
+    def test_full_decode_returns_count_from_the_same_decode_pass(self) -> None:
+        class FakeRunner:
+            command: list[str] | None = None
+
+            def run(
+                self,
+                command: list[str],
+                *,
+                capture_stdout: bool = False,
+                check: bool = True,
+            ) -> subprocess.CompletedProcess[bytes]:
+                self.command = command
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=(
+                        b"frame=1\nprogress=continue\n"
+                        b"frame=12\nprogress=end\n"
+                    ),
+                    stderr=b"",
+                )
+
+        runner = FakeRunner()
+        count = full_decode(
+            runner,  # type: ignore[arg-type]
+            "ffmpeg",
+            Path("fin.mp4"),
+            ignore_editlist=False,
+        )
+
+        self.assertEqual(count, 12)
+        assert runner.command is not None
+        self.assertIn("-progress", runner.command)
+        self.assertIn("pipe:1", runner.command)
+        self.assertIn("0:a:0", runner.command)
+
+    def test_output_metadata_probe_does_not_decode_to_count_frames(
+        self,
+    ) -> None:
+        with patch(
+            "hidden_preview_builder.engine.ffprobe_json",
+            return_value={"streams": [], "format": {}},
+        ) as ffprobe_json_mock:
+            probe_output(
+                Mock(),
+                "ffprobe",
+                Path("fin.mp4"),
+                ignore_editlist=True,
+            )
+
+        arguments = ffprobe_json_mock.call_args.args[3]
+        self.assertIn("-ignore_editlist", arguments)
+        self.assertNotIn("-count_frames", arguments)
+
     def test_resolver_skips_directory_with_lone_ffmpeg(self) -> None:
         ffmpeg_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
         ffprobe_name = "ffprobe.exe" if os.name == "nt" else "ffprobe"
@@ -152,6 +221,7 @@ class EngineUnitTests(unittest.TestCase):
                     "height": 2160,
                     "audio_sample_rate": 48000,
                     "audio_channels": 2,
+                    "timeline": {"normalized": False},
                 },
                 fit="contain",
                 preset="medium",
@@ -162,7 +232,7 @@ class EngineUnitTests(unittest.TestCase):
 
             self.assertEqual(
                 [stage["name"] for stage in plan["stages"]],
-                ["preview", "main", "concat", "mux"],
+                ["preview", "main", "mux"],
             )
             command_text = "\n".join(
                 subprocess.list2cmdline(stage["command"])
@@ -171,9 +241,57 @@ class EngineUnitTests(unittest.TestCase):
             self.assertNotIn("concat=n=2", command_text)
             self.assertIn("-f concat", command_text)
             self.assertIn("-c:v copy", command_text)
+            self.assertNotIn(".fin.joined-video.tmp.mp4", command_text)
             self.assertTrue(
                 (artifacts / ".fin.video-concat.txt").is_file()
             )
+            preview_command = plan["stages"][0]["command"]
+            main_command = plan["stages"][1]["command"]
+            mux_command = plan["stages"][2]["command"]
+            self.assertNotIn("+faststart", preview_command)
+            self.assertNotIn("+faststart", main_command)
+            self.assertIn("+faststart", mux_command)
+            main_filter = main_command[
+                main_command.index("-filter_complex") + 1
+            ]
+            self.assertNotIn("fps=", main_filter)
+            self.assertNotIn("scale=", main_filter)
+
+    def test_normalized_main_keeps_fps_and_scale_filters(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            plan = staged_encode_plan(
+                ffmpeg="ffmpeg",
+                main_video=root / "main.mp4",
+                preview_source=root / "preview.mp4",
+                preview_kind="video",
+                intermediate=artifacts / ".fin.physical.tmp.mp4",
+                artifacts=artifacts,
+                spec={
+                    "fps": Fraction(30, 1),
+                    "frame_count": 30,
+                    "duration": Fraction(1, 1),
+                    "width": 1920,
+                    "height": 1080,
+                    "audio_sample_rate": 48000,
+                    "audio_channels": 2,
+                    "timeline": {"normalized": True},
+                },
+                fit="contain",
+                preset="medium",
+                crf=18,
+                audio_bitrate="256k",
+                video_timescale=30000,
+            )
+
+            main_command = plan["stages"][1]["command"]
+            main_filter = main_command[
+                main_command.index("-filter_complex") + 1
+            ]
+            self.assertIn("fps=30/1", main_filter)
+            self.assertIn("scale=1920:1080", main_filter)
 
     def test_frozen_app_prefers_side_by_side_tools(self) -> None:
         ffmpeg_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
